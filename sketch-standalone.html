@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>粒子正方体 + 年轮 - p5.js 单文件</title>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+  <style>
+    body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    canvas { border-radius: 12px; }
+  </style>
+</head>
+<body>
+<script>
+/* 正方体 + 年轮感 ｜ 4:3 画布 1200×900
+ * 黑底 ｜ 粒子立方体（大中小三个）｜ 同心方环年轮 ｜ 呼吸 + 流动发光
+ */
+
+const W = 1200;
+const H = 900;
+const FPS = 30;
+const DURATION_SECONDS = 10;
+
+let exporting = false;
+let exportFrame = 0;
+const EXPORT_TOTAL_FRAMES = FPS * DURATION_SECONDS;
+
+const RING_LAYERS = 16;
+const PARTICLES_PER_RING = 260;
+const EDGE_PARTICLES = 168;
+const FIELD_COUNT = 2800;
+
+const CUBE_CONFIGS = [
+  { scale: 1.0, offsetX: 0, offsetY: 0, rotPhase: 0 },
+  { scale: 0.58, offsetX: 0.22, offsetY: -0.14, rotPhase: 0.8 },
+  { scale: 0.32, offsetX: -0.26, offsetY: 0.18, rotPhase: 1.6 }
+];
+
+let t0 = 0;
+let ringParticles = [];
+let edgeParticles = [];
+let fieldParticles = [];
+
+function setup() {
+  createCanvas(W, H);
+  pixelDensity(1);
+  frameRate(FPS);
+  t0 = millis();
+  initParticles();
+}
+
+function initParticles() {
+  ringParticles = [];
+  edgeParticles = [];
+  fieldParticles = [];
+
+  for (let layer = 0; layer < RING_LAYERS; layer++) {
+    const u = (layer + 0.5) / RING_LAYERS;
+    const baseRadius = 0.15 + 0.75 * u;
+    const parts = [];
+    const n = PARTICLES_PER_RING;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      let x, y;
+      if (t < 0.25) { x = lerp(-1, 1, t * 4); y = -1; }
+      else if (t < 0.5) { x = 1; y = lerp(-1, 1, (t - 0.25) * 4); }
+      else if (t < 0.75) { x = lerp(1, -1, (t - 0.5) * 4); y = 1; }
+      else { x = -1; y = lerp(1, -1, (t - 0.75) * 4); }
+      parts.push({
+        x: x * baseRadius + randomGaussian(0, 0.012),
+        y: y * baseRadius + randomGaussian(0, 0.012),
+        layer, u, phase: random(1),
+        size: random(1.2, 2.2) * (1 - 0.3 * u)
+      });
+    }
+    ringParticles.push(parts);
+  }
+
+  const half = 0.5;
+  const corners = [
+    [-half,-half,-half],[half,-half,-half],[half,half,-half],[-half,half,-half],
+    [-half,-half,half],[half,-half,half],[half,half,half],[-half,half,half]
+  ];
+  const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  for (const [i, j] of edges) {
+    const a = corners[i], b = corners[j];
+    const n = Math.floor(EDGE_PARTICLES / 12) + 2;
+    for (let k = 0; k < n; k++) {
+      const t = k / (n - 1);
+      edgeParticles.push({
+        x: lerp(a[0], b[0], t) + randomGaussian(0, 0.02),
+        y: lerp(a[1], b[1], t) + randomGaussian(0, 0.02),
+        z: lerp(a[2], b[2], t) + randomGaussian(0, 0.02),
+        phase: random(1), size: random(1.4, 2.6)
+      });
+    }
+  }
+
+  for (let i = 0; i < FIELD_COUNT; i++) {
+    fieldParticles.push({
+      x: random(-1.2, 1.2), y: random(-1.2, 1.2),
+      phase: random(1), orbit: random(0.5, 1.2), size: random(0.8, 1.6)
+    });
+  }
+}
+
+function draw() {
+  const now = millis() - t0;
+  const t = now / 1000;
+
+  drawBackground();
+
+  const BREATH_PERIOD_MS = 8000;
+  const breathPhase = (now % BREATH_PERIOD_MS) / BREATH_PERIOD_MS;
+  const breath01 = asymmetricBreath(breathPhase, 0.6);
+  const breathSigned = breath01 * 2 - 1;
+
+  const cx = W * 0.5, cy = H * 0.5;
+  const baseSize = 320;
+  const S = baseSize * (1 + 0.12 * breathSigned);
+
+  const floatX = 25 * sin(TWO_PI * now / 13000 + 0.4);
+  const floatY = 30 * sin(TWO_PI * now / 11000 + 1.1);
+  const rotY = 0.15 * t, rotX = 0.12 * t;
+
+  blendMode(ADD);
+
+  drawFieldParticles(cx + floatX, cy + floatY, S, breath01, t);
+  drawRingLayers(cx + floatX, cy + floatY, S, breath01, breathPhase, rotX, rotY, t);
+
+  const configs = [...CUBE_CONFIGS].sort((a, b) => a.scale - b.scale);
+  for (const cfg of configs) {
+    const cxCube = cx + floatX + cfg.offsetX * W * 0.35;
+    const cyCube = cy + floatY + cfg.offsetY * H * 0.35;
+    const SCube = S * cfg.scale;
+    drawCubeEdges(cxCube, cyCube, SCube, breath01, rotX + cfg.rotPhase * 0.5, rotY + cfg.rotPhase * 0.3, t);
+  }
+
+  blendMode(BLEND);
+
+  if (exporting) {
+    saveCanvas(`frame_${nf(exportFrame, 5)}`, "png");
+    exportFrame += 1;
+    if (exportFrame >= EXPORT_TOTAL_FRAMES) { exporting = false; noLoop(); console.log("导出完成:", EXPORT_TOTAL_FRAMES); }
+  }
+}
+
+function keyPressed() {
+  if (key === "r" || key === "R") { exporting = true; exportFrame = 0; loop(); }
+  if (keyCode === 27) { exporting = false; loop(); }
+}
+
+function drawBackground() {
+  background(0);
+  const g = drawingContext.createRadialGradient(W/2, H/2, 0, W/2, H/2, W*0.8);
+  g.addColorStop(0, "rgba(8,14,28,0.6)"); g.addColorStop(0.5, "rgba(2,4,10,0.3)"); g.addColorStop(1, "rgba(0,0,0,0)");
+  drawingContext.fillStyle = g; drawingContext.fillRect(0, 0, W, H);
+  noStroke();
+  for (let i = 0; i < 2400; i++) { fill(190, 210, 255, random(3, 10)); rect(random(W), random(H), 1, 1); }
+}
+
+function asymmetricBreath(phase01, inhalePortion) {
+  const p = ((phase01 % 1) + 1) % 1;
+  if (p < inhalePortion) return 0.5 - 0.5 * cos(PI * (p / inhalePortion));
+  let x = (p - inhalePortion) / (1 - inhalePortion); x = constrain(x, 0, 1);
+  return 1 - (x * x * (3 - 2 * x));
+}
+
+function drawFieldParticles(cx, cy, S, breath01, t) {
+  noStroke();
+  for (const p of fieldParticles) {
+    const ang = TWO_PI * (p.phase + t / (8 + 4 * p.orbit));
+    const r = S * (1.1 + 0.8 * p.orbit) * (0.9 + 0.2 * cos(ang));
+    const x = cx + (p.x + 0.1 * cos(ang)) * r, y = cy + (p.y + 0.1 * sin(ang)) * r;
+    const flicker = 0.5 + 0.5 * sin(TWO_PI * (t/6 + p.phase));
+    const alpha = 45 + 65 * flicker * breath01;
+    const flow = 0.75 + 0.45 * sin(TWO_PI * (t*0.8 + p.phase*2)) + 0.2 * sin(TWO_PI * (t*0.35 + p.orbit));
+    const flowA = 0.6 + 0.4 * sin(TWO_PI * (t*0.6 + p.phase));
+    fill(200, 220, 255, alpha * 0.25 * flowA); ellipse(x, y, p.size*2.8*flow, p.size*2.8*flow);
+    fill(200, 220, 255, alpha * 0.5 * flowA); ellipse(x, y, p.size*1.6*flow, p.size*1.6*flow);
+    fill(200, 220, 255, alpha); ellipse(x, y, p.size, p.size);
+  }
+}
+
+function drawRingLayers(cx, cy, S, breath01, breathPhase, rotX, rotY, t) {
+  noStroke();
+  const camZ = 500, focal = 550;
+  for (let layer = 0; layer < RING_LAYERS; layer++) {
+    const u = (layer + 0.5) / RING_LAYERS;
+    const ageFactor = 1 - 0.5 * u;
+    const pulse = 0.92 + 0.08 * sin(TWO_PI * (t/5 + layer*0.15));
+    const scale = S * pulse * (0.85 + 0.25 * breath01);
+    for (const p of ringParticles[layer]) {
+      const px = p.x * scale, py = p.y * scale;
+      const cosX = cos(rotX), sinX = sin(rotX), cosY = cos(rotY), sinY = sin(rotY);
+      let x = px, y = py, z = 0;
+      const y1 = y*cosX - z*sinX, z1 = y*sinX + z*cosX;
+      const x2 = x*cosY + z1*sinY, z2 = -x*sinY + z1*cosY;
+      const sz = z2 + camZ; if (sz < 20) continue;
+      const sx = cx + (x2 * focal) / sz, sy = cy - (y1 * focal) / sz;
+      const flicker = 0.5 + 0.5 * sin(TWO_PI * (t/4 + p.phase));
+      const alpha = (100 + 120 * flicker * breath01) * ageFactor;
+      const flow = 0.8 + 0.4*sin(TWO_PI*(t*0.7+p.phase)) + 0.15*sin(TWO_PI*(t*0.25+layer*0.4));
+      const flowA = 0.65 + 0.35 * sin(TWO_PI * (t*0.5 + p.phase + u));
+      fill(210, 228, 255, alpha*0.2*flowA); ellipse(sx, sy, p.size*3.2*flow, p.size*3.2*flow);
+      fill(210, 228, 255, alpha*0.45*flowA); ellipse(sx, sy, p.size*1.8*flow, p.size*1.8*flow);
+      fill(210, 228, 255, alpha); ellipse(sx, sy, p.size, p.size);
+    }
+  }
+}
+
+function drawCubeEdges(cx, cy, S, breath01, rotX, rotY, t) {
+  noStroke();
+  const camZ = 500, focal = 550;
+  const scale = S * 0.48 * (0.95 + 0.08 * breath01);
+  for (const p of edgeParticles) {
+    let x = p.x*scale, y = p.y*scale, z = p.z*scale;
+    const cosX = cos(rotX), sinX = sin(rotX), cosY = cos(rotY), sinY = sin(rotY);
+    const y1 = y*cosX - z*sinX, z1 = y*sinX + z*cosX;
+    const x2 = x*cosY + z1*sinY, z2 = -x*sinY + z1*cosY;
+    const sz = z2 + camZ; if (sz < 30) continue;
+    const sx = cx + (x2 * focal) / sz, sy = cy - (y1 * focal) / sz;
+    const flicker = 0.6 + 0.4 * sin(TWO_PI * (t/3 + p.phase));
+    const alpha = 160 + 95 * flicker * breath01;
+    const flow = 0.78 + 0.44*sin(TWO_PI*(t*0.65+p.phase)) + 0.18*sin(TWO_PI*t*0.28);
+    const flowA = 0.6 + 0.4 * sin(TWO_PI * (t*0.55 + p.phase));
+    fill(235, 248, 255, alpha*0.18*flowA); ellipse(sx, sy, p.size*3.5*flow, p.size*3.5*flow);
+    fill(235, 248, 255, alpha*0.4*flowA); ellipse(sx, sy, p.size*2*flow, p.size*2*flow);
+    fill(235, 248, 255, alpha); ellipse(sx, sy, p.size, p.size);
+  }
+}
+</script>
+</body>
+</html>
